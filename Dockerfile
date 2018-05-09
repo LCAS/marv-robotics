@@ -76,7 +76,9 @@ fi'
 
 ARG code=code
 
-COPY --chown=marv:marv ${code:-requirements.txt} /home/marv/code
+USER root
+COPY ${code:-requirements.txt} /home/marv/code
+RUN chown -R marv:marv /home/marv
 RUN bash -c '\
 if [[ -z "$code" ]]; then \
     rm /home/marv/code; \
@@ -84,9 +86,13 @@ fi'
 
 ARG docs=docs
 
-COPY --chown=marv:marv CHANGES.rst /home/marv/CHANGES.rst
-COPY --chown=marv:marv tutorial /home/marv/tutorial
-COPY --chown=marv:marv ${docs:-requirements.txt} /home/marv/docs
+COPY CHANGES.rst /home/marv/CHANGES.rst
+RUN chown -R marv:marv /home/marv
+COPY tutorial /home/marv/tutorial
+RUN chown -R marv:marv /home/marv
+COPY ${docs:-requirements.txt} /home/marv/docs
+RUN chown -R marv:marv /home/marv
+
 RUN bash -c '\
 if [[ -z "$docs" ]]; then \
     rm -r /home/marv/docs /home/marv/CHANGES.rst /home/marv/tutorial; \
@@ -94,11 +100,14 @@ fi'
 
 ARG scripts=scripts
 
-COPY --chown=marv:marv ${scripts:-requirements.txt} /home/marv/scripts
+COPY ${scripts:-requirements.txt} /home/marv/scripts
+RUN chown -R marv:marv /home/marv
 RUN bash -c '\
 if [[ -z "$scripts" ]]; then \
     rm /home/marv/scripts; \
 fi'
+
+USER marv
 
 ARG version=
 
