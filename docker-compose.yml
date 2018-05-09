@@ -1,0 +1,17 @@
+version: '2'
+services:
+  marv:
+    image: "uollcas/marv-robotics"
+    volumes:
+     - "./code:/home/marv/code"
+     - "./docs:/home/marv/docs"
+     - "./scripts:/home/marv/scripts"
+     - "./tutorial:/home/marv/tutorial"
+     - "./CHANGES.rst:/home/marv/CHANGES.rst"
+     - "./sites/example:/home/marv/site"
+     - "./scanroot:/scanroot"
+    environment:
+     - MARV_USERID
+     - MARV_GROUPID
+    ports:
+     - "9999:8000"
