@@ -1,7 +1,7 @@
 version: '2'
 services:
   marv:
-    image: "uollcas/marv-robotics"
+    image: "lcasuol/marv-robotics"
     volumes:
      - "./code:/home/marv/code"
      - "./docs:/home/marv/docs"
