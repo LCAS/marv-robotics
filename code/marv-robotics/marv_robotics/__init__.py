@@ -5,6 +5,6 @@
 
 from __future__ import absolute_import, division, print_function
 
-__version__ = '3.3.5'
+__version__ = '19.02.0'
 
 from . import _monkeypatches

@@ -4,11 +4,14 @@ sphinx_paramlinks
 
 # development
 flake8
-ipdb
-ipython==5.6.0  # pip-tools finds 6.3.1 but fails to install it
+ipython
 mock
+pdbpp
+pylint
+pylint-flask
 pytest
 pytest-cov
+pytest-xdist
 termcolor
 testfixtures
 uwsgi

@@ -94,7 +94,7 @@ def meta():
     # TODO: id probably numeric, title = name or title
     collections = current_app.site.collections
     collection_id = collections.default_id
-    return flask.jsonify({
+    resp = flask.jsonify({
         'collections': {
             'default': collection_id,
             'items': [{'id': x, 'title': x} for x in collections.keys()],
@@ -102,6 +102,8 @@ def meta():
         'acl': acl,
         'realms': current_app.site.config.marv.oauth.keys(),
     })
+    resp.headers['Cache-Control'] = 'no-cache'
+    return resp
 
 
 @marv_api_endpoint('/collection', defaults={'collection_id': None})
@@ -179,10 +181,12 @@ def collection(collection_id):
     }
     indent = None
     separators = (',', ':')
-    if current_app.config['JSONIFY_PRETTYPRINT_REGULAR'] and not request.is_xhr:
+    if current_app.config['JSONIFY_PRETTYPRINT_REGULAR'] or current_app.debug:
         indent = 2
         separators = (', ', ': ')
     jsondata = jsondumps(dct, indent=indent, separators=separators, sort_keys=True)
     jsondata = jsondata.replace('"#ROWS#"', rowdata)
-    return current_app.response_class(
+    resp = current_app.response_class(
         (jsondata, '\n'), mimetype=current_app.config['JSONIFY_MIMETYPE'])
+    resp.headers['Cache-Control'] = 'no-cache'
+    return resp

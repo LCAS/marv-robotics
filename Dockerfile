@@ -7,7 +7,6 @@ FROM ros:kinetic-ros-base
 # debconf: delaying package configuration, since apt-utils is not installed
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
-    apt-get upgrade -y && \
     apt-get install -y \
         bash-completion \
         bc \
@@ -32,14 +31,13 @@ RUN apt-get update && \
         python-opencv \
         python-pip \
         ros-kinetic-laser-geometry \
-        ros-kinetic-ros-base \
         rsync \
         sqlite3 \
         ssh \
         unzip \
         vim \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install -U pip==9.0.3 pip-tools==2.0.1 setuptools==39.0.1 virtualenv==15.2.0 wheel==0.31.0
+RUN pip install -U pip==10.0.1 pip-tools==2.0.2 setuptools==39.2.0 virtualenv==16.0.0 wheel==0.31.0
 
 RUN locale-gen en_US.UTF-8; dpkg-reconfigure -f noninteractive locales
 ENV LANG en_US.UTF-8
@@ -67,7 +65,7 @@ COPY requirements.txt /
 RUN bash -c '\
 if [[ -n "$MARV_VENV" ]]; then \
     virtualenv -p python2.7 --system-site-packages $MARV_VENV; \
-    $MARV_VENV/bin/pip install -U pip==9.0.3 setuptools==39.0.1 wheel==0.31.0; \
+    $MARV_VENV/bin/pip install -U pip==10.0.1 setuptools==39.2.0 wheel==0.31.0; \
     $MARV_VENV/bin/pip install -U -r /requirements.txt; \
     $MARV_VENV/bin/pip install -U --force-reinstall --no-binary :all: uwsgi; \
     sed -e "s|^backend .*|backend : Agg|" \
@@ -110,11 +108,12 @@ fi'
 USER marv
 
 ARG version=
+ARG pypi_install_args=
 
 RUN bash -c '\
 if [[ -n "$MARV_VENV" ]]; then \
     if [[ -z "$code" ]]; then \
-        ${MARV_VENV}/bin/pip install marv-robotics${version:+==${version}}; \
+        ${MARV_VENV}/bin/pip install ${pypi_install_args} marv-robotics${version:+==${version}}; \
     else \
         find /home/marv/code -maxdepth 2 -name setup.py -execdir ${MARV_VENV}/bin/pip install --no-deps . \; ;\
         ${MARV_VENV}/bin/pip install /home/marv/code/marv-robotics; \

@@ -8,22 +8,22 @@ from __future__ import absolute_import, division, print_function
 import json
 import os
 import shutil
-import time
 from itertools import count, groupby, product
 from logging import getLogger
 from uuid import uuid4
 
+import sqlalchemy as sqla
 from flask import current_app as app
 from pkg_resources import resource_filename
 
 from marv_node.run import run_nodes
 from marv_store import Store
+from . import utils
 from .collection import esc
 from .collection import Collections
 from .config import Config
 from .model import STATUS_MISSING, STATUS_OUTDATED
 from .model import Comment, Dataset, File, Group, Tag, User, dataset_tag, db
-from .utils import find_obj
 
 
 DEFAULT_NODES = """
@@ -166,7 +166,7 @@ class Site(object):
             dbdir = os.path.dirname(self.config.marv.dburi.replace('sqlite:///', ''))
             os.mkdir(dbdir)
             log.verbose('Created %s', dbdir)
-        except OSError:
+        except OSError as e:
             if e.errno != 17:
                 raise
 
@@ -287,7 +287,14 @@ class Site(object):
         for user in users or []:
             user.setdefault('realm', 'marv')
             user.setdefault('realmuid', '')
-            app.um.user_add(**user)
+            groups = user.pop('groups', [])
+            app.um.user_add(_restore=True, **user)
+            for grp in groups:
+                try:
+                    app.um.group_adduser(grp, user['name'])
+                except ValueError:
+                    app.um.group_add(grp)
+                    app.um.group_adduser(grp, user['name'])
 
         for key, sets in (datasets or {}).items():
             key = self.collections.keys()[0] if key == 'DEFAULT_COLLECTION' else key
@@ -303,7 +310,7 @@ class Site(object):
         return tags
 
     def query(self, collections=None, discarded=None, outdated=None,
-              path=None, tags=None, abbrev=None):
+              path=None, tags=None, abbrev=None, missing=None):
         abbrev = 10 if abbrev is True else abbrev
         discarded = bool(discarded)
         query = db.session.query(Dataset.setid)
@@ -319,6 +326,12 @@ class Site(object):
         if path:
             relquery = db.session.query(File.dataset_id)\
                                  .filter(File.path.like('{}%'.format(esc(path)), escape='$'))\
+                                 .group_by(File.dataset_id)
+            query = query.filter(Dataset.id.in_(relquery.subquery()))
+
+        if missing:
+            relquery = db.session.query(File.dataset_id)\
+                                 .filter(File.missing.is_(True))\
                                  .group_by(File.dataset_id)
             query = query.filter(Dataset.id.in_(relquery.subquery()))
 
@@ -348,7 +361,7 @@ class Site(object):
             selected_nodes.update(collection.detail_deps)
         persistent = collection.nodes
         try:
-            nodes = {persistent[name] if not ':' in name else find_obj(name)
+            nodes = {persistent[name] if not ':' in name else utils.find_obj(name)
                      for name in selected_nodes
                      if name not in excluded_nodes
                      if name != 'dataset'}
@@ -385,13 +398,15 @@ class Site(object):
                     shutil.rmtree(tmpdir)
                 store.pending.clear()
 
+        return changed
+
     def scan(self, dry_run=None):
         for collection in self.collections.values():
             for scanroot in collection.scanroots:
                 collection.scan(scanroot, dry_run)
 
     def comment(self, username, message, ids):
-        now = int(time.time() * 1000)
+        now = int(utils.now() * 1000)
         comments = [Comment(dataset_id=id, author=username, time_added=now,
                             text=message)
                     for id in ids]
@@ -436,3 +451,108 @@ class Site(object):
                 db.session.execute(stmt)
 
         db.session.commit()
+
+
+def dump_database(dburi):
+    """Dump database.
+
+    The structure of the database is reflected and therefore also
+    older databases, not matching the current version of marv, can be
+    dumped.
+    """
+
+    engine = sqla.create_engine(dburi)
+    meta = sqla.MetaData(engine)
+    meta.reflect()
+    con = engine.connect()
+    tables = {k: v for k, v in meta.tables.items() if not k.startswith('listing_')}
+    select = sqla.sql.select
+
+    def rows2dcts(stmt):
+        result = con.execute(stmt)
+        keys = result.keys()
+        return [{k: v for k, v in zip(keys, row)} for row in result]
+
+    comments = {}
+    comment_t = tables.pop('comment')
+    stmt = select([comment_t]).order_by(comment_t.c.dataset_id, comment_t.c.id)
+    for did, grp in groupby(rows2dcts(stmt), key=lambda x: x['dataset_id']):
+        assert did not in comments
+        comments[did] = lst = []
+        for comment in grp:
+            # Everything except these fields is included in the dump
+            del comment['dataset_id']
+            del comment['id']
+            lst.append(comment)
+
+    files = {}
+    file_t = tables.pop('file')
+    stmt = select([file_t]).order_by(file_t.c.dataset_id, file_t.c.idx)
+    for did, grp in groupby(rows2dcts(stmt), key=lambda x: x['dataset_id']):
+        assert did not in files
+        files[did] = lst = []
+        for file in grp:
+            # Everything except these fields is included in the dump
+            del file['dataset_id']
+            del file['idx']
+            lst.append(file)
+
+    tags = {}
+    dataset_tag_t = tables.pop('dataset_tag')
+    tag_t = tables.pop('tag')
+    stmt = select([dataset_tag_t, tag_t]).where(dataset_tag_t.c.tag_id == tag_t.c.id)\
+                                         .order_by(dataset_tag_t.c.dataset_id, tag_t.c.value)
+    for did, grp in groupby(rows2dcts(stmt), key=lambda x: x['dataset_id']):
+        assert did not in tags
+        tags[did] = lst = []
+        for tag in grp:
+            del tag['dataset_id']
+            del tag['collection']
+            del tag['id']
+            del tag['tag_id']
+            lst.append(tag.pop('value'))
+            assert not tag
+
+    dump = {}
+    dump['datasets'] = collections = {}
+    dataset_t = tables.pop('dataset')
+    stmt = select([dataset_t]).order_by(dataset_t.c.setid)
+    for dataset in rows2dcts(stmt):
+        did = dataset.pop('id')  # Everything except this is included in the dump
+        dataset['comments'] = comments.pop(did, [])
+        dataset['files'] = files.pop(did)
+        dataset['tags'] = tags.pop(did, [])
+        collections.setdefault(dataset.pop('collection'), []).append(dataset)
+
+    assert not comments, comments
+    assert not files, files
+    assert not tags, tags
+
+    groups = {}
+    group_t = tables.pop('group')
+    user_group_t = tables.pop('user_group')
+    stmt = select([user_group_t, group_t]).where(user_group_t.c.group_id == group_t.c.id)\
+                                          .order_by(user_group_t.c.user_id, group_t.c.name)
+    for uid, grp in groupby(rows2dcts(stmt), key=lambda x: x['user_id']):
+        assert uid not in groups
+        groups[uid] = lst = []
+        for group in grp:
+            del group['user_id']
+            del group['group_id']
+            del group['id']
+            name = group.pop('name')
+            assert not group
+            lst.append(name)
+
+    dump['users'] = users = []
+    user_t = tables.pop('user')
+    stmt = select([user_t]).order_by(user_t.c.name)
+    for user in rows2dcts(select([user_t])):
+        user_id = user.pop('id')  # Everything except this is included in the dump
+        user['groups'] = groups.pop(user_id, [])
+        users.append(user)
+
+    assert not groups, groups
+    assert not tables, tables.keys()
+
+    return dump

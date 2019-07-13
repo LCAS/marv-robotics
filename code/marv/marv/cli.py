@@ -20,11 +20,12 @@ import marv.app
 from marv.config import ConfigError
 from marv.model import Comment, Dataset, User, Group, dataset_tag, db
 from marv.model import STATUS_MISSING
-from marv.site import Site, UnknownNode
+from marv.site import Site, UnknownNode, dump_database, make_config
 from marv.utils import find_obj
 from marv_cli import marv as marvcli
-from marv_cli import IPDB
+from marv_cli import PDB
 from marv_node.setid import SetID
+from marv_node.stream import RequestedMessageTooOld
 from marv_store import DirectoryAlreadyExists
 
 
@@ -133,20 +134,20 @@ def marvcli_develop_server(port, public):
     app.site.load_for_web()
     CORS(app)
 
-    class IPDBMiddleware(object):
+    class PDBMiddleware(object):
         def __init__(self, app):
             self.app = app
 
         def __call__(self, environ, start_response):
-            from ipdb import launch_ipdb_on_exception
-            with launch_ipdb_on_exception():
+            from marv_cli import launch_pdb_on_exception
+            with launch_pdb_on_exception():
                 appiter = self.app(environ, start_response)
                 for item in appiter:
                     yield item
 
     app.debug = True
-    if IPDB:
-        app.wsgi_app = IPDBMiddleware(app.wsgi_app)
+    if PDB:
+        app.wsgi_app = PDBMiddleware(app.wsgi_app)
         app.run(use_debugger=False,
                 use_reloader=False,
                 host=('0.0.0.0' if public else '127.0.0.1'),
@@ -232,11 +233,31 @@ def marvcli_undiscard(datasets):
     db.session.commit()
 
 
+@marvcli.command('dump')
+@click.argument('dump_file', type=click.File('w'))
+def marvcli_dump(dump_file):
+    """Dump database to json file.
+
+    Use '-' for stdout.
+    """
+    ctx = click.get_current_context()
+    if ctx.obj is None:
+        ctx.fail('Could not find config file: ./marv.conf or /etc/marv/marv.conf.\n'
+                 'Change working directory or specify explicitly:\n\n'
+                 '  marv --config /path/to/marv.conf\n')
+    siteconf = make_config(ctx.obj)
+    dump = dump_database(siteconf.marv.dburi)
+    json.dump(dump, dump_file, sort_keys=True, indent=2)
+
+
 @marvcli.command('restore')
-@click.argument('file', type=click.File(), default='-')
-def marvcli_restore(file):
-    """Restore previously dumped database"""
-    data = json.load(file)
+@click.argument('dump_file', type=click.File())
+def marvcli_restore(dump_file):
+    """Restore previously dumped database from file.
+
+    Use '-' to read from stdin.
+    """
+    data = json.load(dump_file)
     site = create_app().site
     site.restore_database(**data)
 
@@ -252,18 +273,19 @@ def marvcli_init():
 @click.option('--col', '--collection', 'collections', multiple=True,
               help='Limit to one or more collections or force listing of all with --collection=*')
 @click.option('--discarded/--no-discarded', help='Dataset is discarded')
+@click.option('--missing', is_flag=True, help='Datasets with missing files')
 @click.option('--outdated', is_flag=True, help='Datasets with outdated node output')
 @click.option('--path', type=click.Path(resolve_path=True),
               help='Dataset contains files whose path starts with PATH')
 @click.option('--tagged', 'tags', multiple=True, help='Match any given tag')
 @click.option('-0', '--null', is_flag=True, help='Use null byte to separate output instead of newlines')
 @click.pass_context
-def marvcli_query(ctx, list_tags, collections, discarded, outdated, path, tags, null):
+def marvcli_query(ctx, list_tags, collections, discarded, missing, outdated, path, tags, null):
     """Query datasets.
 
-    Use --collection=* to list all datasets across all collections.
+    Use --col=* to list all datasets across all collections.
     """
-    if not any([collections, discarded, list_tags, outdated, path, tags]):
+    if not any([collections, discarded, list_tags, missing, outdated, path, tags]):
         click.echo(ctx.get_help())
         ctx.exit(1)
 
@@ -282,11 +304,9 @@ def marvcli_query(ctx, list_tags, collections, discarded, outdated, path, tags, 
         tags = site.listtags(collections)
         if tags:
             click.echo(sep.join(tags), nl=not null)
-        else:
-            click.echo('no tags', err=True)
         return
 
-    setids = site.query(collections, discarded, outdated, path, tags)
+    setids = site.query(collections, discarded, outdated, path, tags, missing=missing)
     if setids:
         sep = '\x00' if null else '\n'
         click.echo(sep.join(setids), nl=not null)
@@ -346,6 +366,9 @@ def marvcli_run(ctx, datasets, deps, excluded_nodes, force, force_dependent,
     if list_dependent and not selected_nodes:
         ctx.fail('--list-dependent needs at least one selected --node')
 
+    if force_dependent and not selected_nodes:
+        ctx.fail('--force-dependent needs at least one selected --node')
+
     if not any([datasets, collections, list_nodes]):
         click.echo(ctx.get_help())
         ctx.exit(1)
@@ -398,7 +421,7 @@ def marvcli_run(ctx, datasets, deps, excluded_nodes, force, force_dependent,
         setids = (SetID(x[0]) for x in query)
 
     for setid in setids:
-        if IPDB:
+        if PDB:
             site.run(setid, selected_nodes, deps, force, keep,
                      force_dependent, update_detail, update_listing,
                      excluded_nodes, cachesize=cachesize)
@@ -413,6 +436,11 @@ def marvcli_run(ctx, datasets, deps, excluded_nodes, force, force_dependent,
                 click.echo('ERROR: unknown {!r}'.format(setid), err=True)
                 if not keep_going:
                     raise
+            except RequestedMessageTooOld as e:
+                ctx.fail((
+                    "{} pulled {} message {} not being in memory anymore."
+                    "\nSee https://ternaris.com/marv-robotics/docs/patterns.html#reduce-separately"
+                ).format(e.args[0]._requestor.node.name, e.args[0].handle.node.name, e.args[1]))
             except BaseException as e:
                 errors.append(setid)
                 if isinstance(e, KeyboardInterrupt):
